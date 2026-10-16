@@ -43,22 +43,25 @@ const Race = {
       add({ cls: 'maiden', age: '2', surf: 'turf', dist: U.pick(T2) });
       add({ cls: 'maiden', age: '2', surf: 'dirt', dist: U.pick([1200, 1400, 1700, 1800]) });
     }
-    if (week >= 29) add({ cls: 'w1', age: '2', surf: week % 2 ? 'turf' : 'dirt', dist: U.pick(T2) });
-    if (week >= 33 && week % 2 === 0) add({ cls: 'op', age: '2', surf: 'turf', dist: U.pick(T2) });
+    if (week >= 25) add({ cls: 'w1', age: '2', surf: 'turf', dist: U.pick(T2) });
+    if (week >= 27) add({ cls: 'w1', age: '2', surf: 'dirt', dist: U.pick([1200, 1400, 1600, 1800]) });
+    if (week >= 29) add({ cls: 'op', age: '2', surf: 'turf', dist: U.pick(T2) });
     if (week <= 36) {
       add({ cls: 'maiden', age: '3', surf: 'turf', dist: U.pick(T) });
       add({ cls: 'maiden', age: '3', surf: 'dirt', dist: U.pick(D) });
     }
     if (week <= 20) {
-      add({ cls: 'w1', age: '3', surf: week % 2 ? 'turf' : 'dirt', dist: U.pick(week % 2 ? T : D) });
-      if (week % 2 === 0) add({ cls: 'op', age: '3', surf: 'turf', dist: U.pick(T) });
+      add({ cls: 'w1', age: '3', surf: 'turf', dist: U.pick(T) });
+      add({ cls: 'w1', age: '3', surf: 'dirt', dist: U.pick(D) });
+      add({ cls: 'op', age: '3', surf: week % 3 === 0 ? 'dirt' : 'turf', dist: U.pick(week % 3 === 0 ? D : T) });
     }
     const oa = week <= 20 ? '4+' : '3+';
     add({ cls: 'w1', age: oa, surf: 'turf', dist: U.pick(T) });
     add({ cls: 'w1', age: oa, surf: 'dirt', dist: U.pick(D) });
     add({ cls: 'w2', age: oa, surf: 'turf', dist: U.pick(T) });
     add({ cls: 'w2', age: oa, surf: 'dirt', dist: U.pick(D) });
-    add({ cls: 'w3', age: oa, surf: week % 2 ? 'turf' : 'dirt', dist: U.pick(week % 2 ? T : D) });
+    add({ cls: 'w3', age: oa, surf: 'turf', dist: U.pick(T) });
+    if (week % 2 === 0) add({ cls: 'w3', age: oa, surf: 'dirt', dist: U.pick(D) });
     add({ cls: 'op', age: oa, surf: week % 3 === 0 ? 'dirt' : 'turf', dist: U.pick(week % 3 === 0 ? D : T) });
     for (const g of GRADED) {
       if ((g.m - 1) * 4 + g.w !== week) continue;
@@ -71,12 +74,20 @@ const Race = {
 
   eligible(h, r) {
     if (h.role !== 'racing' || h.inj > 0 || h.rest > 0) return false;
-    const age = Gen.age(h);
+    return Race.ageSexOk(h, r, S.year) && Race.classOk(h, r);
+  },
+
+  ageSexOk(h, r, year) {
+    const age = year - h.birth;
     if (r.age === '2' && age !== 2) return false;
     if (r.age === '3' && age !== 3) return false;
     if (r.age === '3+' && age < 3) return false;
     if (r.age === '4+' && age < 4) return false;
     if (r.sex === 'F' && h.sex !== 'F') return false;
+    return true;
+  },
+
+  classOk(h, r) {
     const c = h.record.cls;
     switch (r.cls) {
       case 'debut': return h.record.starts === 0;
@@ -85,6 +96,35 @@ const Race = {
       case 'w2': return c === 2;
       case 'w3': return c === 3;
       default: return Race.isAgeRestricted(r) ? c >= 1 : c >= 3;
+    }
+  },
+
+  // 出走に必要なクラスの説明
+  classReq(r) {
+    switch (r.cls) {
+      case 'debut': return '未出走馬限定';
+      case 'maiden': return '未勝利馬限定';
+      case 'w1': return '1勝クラスの馬';
+      case 'w2': return '2勝クラスの馬';
+      case 'w3': return '3勝クラスの馬';
+      default: return Race.isAgeRestricted(r) ? '1勝クラス以上' : '3勝クラス以上';
+    }
+  },
+
+  // 番組表（先の週まで生成して保存しておく）
+  program(y, w) {
+    S.schedule = S.schedule || {};
+    const key = `${y}-${w}`;
+    if (!S.schedule[key]) S.schedule[key] = Race.generateWeek(y, w);
+    return S.schedule[key];
+  },
+
+  pruneSchedule() {
+    if (!S.schedule) return;
+    const now = S.year * 48 + S.week;
+    for (const k of Object.keys(S.schedule)) {
+      const [y, w] = k.split('-').map(Number);
+      if (y * 48 + w < now) delete S.schedule[k];
     }
   },
 
@@ -145,16 +185,34 @@ const Race = {
 
   // ローテの予定から今週の実際のレースを探す
   findPlanned(h, p) {
+    if (p.rid) {
+      const r = S.weekRaces.find(x => x.id === p.rid);
+      if (r && Race.eligible(h, r)) return r;
+      // 勝ち上がり等でクラスが変わった平場戦は、同じ週の近い条件のレースに振り替える
+      if (!r || RACE_CLS[r.cls].rank >= 5) return null;
+      let best = null, bestD = Infinity;
+      for (const x of S.weekRaces) {
+        if (RACE_CLS[x.cls].rank >= 5 || !Race.eligible(h, x)) continue;
+        const dd = Math.abs(x.dist - r.dist) + (x.surf !== r.surf ? 5000 : 0);
+        if (dd < bestD) { bestD = dd; best = x; }
+      }
+      if (best) {
+        Game.news(`${h.name}はクラスが変わったため、予定の${r.name}から${best.name}（${best.surf === 'turf' ? '芝' : 'ダ'}${best.dist}m）に変更しました。`, 'info');
+        p.rid = best.id; p.n = best.name; p.g = best.cls; p.c = best.cls; p.d = best.dist;
+      }
+      return best;
+    }
     if (p.n) {
       const r = S.weekRaces.find(x => x.name === p.n);
       return r && Race.eligible(h, r) ? r : null;
     }
+    // 指定した馬場を優先し、なければもう一方の馬場からも選ぶ
     let best = null, bestM = -Infinity;
     for (const r of S.weekRaces) {
       if (RACE_CLS[r.cls].rank >= 5 || !Race.eligible(h, r)) continue;
-      if (p.surf && p.surf !== 'any' && r.surf !== p.surf) continue;
       let m = Race.score(h, r) - r.lv;
       if (r.dist < h.dMin || r.dist > h.dMax) m -= 3;
+      if (p.surf && p.surf !== 'any' && r.surf !== p.surf) m -= 100;
       if (m > bestM) { bestM = m; best = r; }
     }
     return best;

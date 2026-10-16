@@ -44,7 +44,8 @@ const Game = {
     mk(S.year - 2, 'racing');
     mk(S.year - 1, 'foal');
 
-    S.weekRaces = Race.generateWeek(S.year, S.week);
+    Race.pruneSchedule();
+    S.weekRaces = Race.program(S.year, S.week);
     Game.autoEntries();
     Game.news(`${S.farmName}の経営が始まりました。繁殖牝馬2頭、競走馬1頭、1歳馬1頭からのスタートです。`, 'info');
     Game.news('種付けシーズンは2月2週〜5月4週です。それまでに配合を検討しましょう。', 'info');
@@ -113,7 +114,8 @@ const Game = {
       Game.newYear(report);
     }
     Game.weekEvents(report);
-    S.weekRaces = Race.generateWeek(S.year, S.week);
+    Race.pruneSchedule();
+    S.weekRaces = Race.program(S.year, S.week);
     Game.autoEntries();
     S.lastReport = report;
     if (S.money < 0 && S.week % 4 === 1) Game.news('資金がマイナスです。馬の売却などで立て直しましょう。', 'bad');
@@ -436,23 +438,22 @@ const Plan = {
     return a === '2' ? age === 2 : a === '3' ? age === 3 : a === '3+' ? age >= 3 : age >= 4;
   },
 
-  // 今週から1年半先までの重賞（年齢・性別で出走可能なもの）
-  upcomingGraded(h) {
+  // 今週から先の番組（年齢・性別で出走可能なもの）
+  upcoming(h, weeks) {
     const out = [];
     const sy = S.year, sw = S.week;
-    for (let i = 0; i < 72; i++) {
-      let y = S.year, w = S.week + i;
-      if (w > 48) { w -= 48; y++; }
-      for (const g of GRADED) {
-        if ((g.m - 1) * 4 + g.w !== w) continue;
-        if (g.x === 'F' && h.sex !== 'F') continue;
-        if (!Plan.ageOk(h, g.a, y)) continue;
-        const r = { cls: g.g, surf: g.s, dist: g.d, age: g.a, sex: g.x, lv: Race.levelFor(g.g, g.a, g.x, w) };
+    for (let i = 0; i < weeks; i++) {
+      let y = sy, w = sw + i;
+      while (w > 48) { w -= 48; y++; }
+      for (const r of Race.program(y, w)) {
+        if (!Race.ageSexOk(h, r, y)) continue;
+        if (r.cls === 'debut' && h.record.starts > 0) continue;
+        if (r.cls === 'maiden' && h.record.cls > 0) continue;
         // 見込みはレース時点の成長度で計算する
         S.year = y; S.week = w;
         const sc = Race.score(h, r, { ignoreCond: true });
         S.year = sy; S.week = sw;
-        out.push({ y, w, g, r, note: Plan.classNote(h, g), out: sc - r.lv });
+        out.push({ y, w, r, ok: Race.classOk(h, r), out: sc - r.lv });
       }
     }
     return out;
@@ -476,6 +477,7 @@ const Plan = {
       const g = GRADED.find(x => x.n === p.n);
       if (g && Plan.classNote(h, g)) return Plan.classNote(h, g);
     }
+    if (p.c) return `出走条件（${Race.classReq({ cls: p.c, age: p.a })}）を満たしていません`;
     return '出走条件を満たしていません';
   },
 
@@ -509,4 +511,30 @@ const Plan = {
   },
 
   next(h) { return (h.plan || [])[0] || null; },
+
+  // 1年分の空いている週を、一定間隔の自己条件戦で埋める
+  fill(h, interval, surf, weeks = 48) {
+    h.plan = h.plan || [];
+    const now = Plan.abs(S.year, S.week);
+    const start = Math.max(now, h.lastRace ? h.lastRace + interval : now, Gen.age(h) <= 2 ? S.year * 48 + 21 : now);
+    let added = 0;
+    for (let t = start; t < now + weeks; t++) {
+      const y = Math.floor((t - 1) / 48), w = t - y * 48;
+      const near = h.plan.some(p => Math.abs(Plan.abs(p.y, p.w) - t) < interval);
+      if (near) continue;
+      h.plan.push({ y, w, n: null, surf });
+      added++;
+    }
+    h.plan.sort((a, b) => Plan.abs(a.y, a.w) - Plan.abs(b.y, b.w));
+    const cur = h.plan.find(p => p.y === S.year && p.w === S.week);
+    if (cur) { const r = Race.findPlanned(h, cur); if (r) S.entries[h.id] = r.id; }
+    Game.save();
+    return added;
+  },
+
+  clear(h) {
+    h.plan = [];
+    delete S.entries[h.id];
+    Game.save();
+  },
 };
