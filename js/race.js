@@ -143,6 +143,23 @@ const Race = {
     return best;
   },
 
+  // ローテの予定から今週の実際のレースを探す
+  findPlanned(h, p) {
+    if (p.n) {
+      const r = S.weekRaces.find(x => x.name === p.n);
+      return r && Race.eligible(h, r) ? r : null;
+    }
+    let best = null, bestM = -Infinity;
+    for (const r of S.weekRaces) {
+      if (RACE_CLS[r.cls].rank >= 5 || !Race.eligible(h, r)) continue;
+      if (p.surf && p.surf !== 'any' && r.surf !== p.surf) continue;
+      let m = Race.score(h, r) - r.lv;
+      if (r.dist < h.dMin || r.dist > h.dMax) m -= 3;
+      if (m > bestM) { bestM = m; best = r; }
+    }
+    return best;
+  },
+
   npcStyle() { return U.weightedPick(STYLES, s => ({ '逃げ': 0.15, '先行': 0.35, '差し': 0.35, '追込': 0.15 }[s])); },
 
   buildField(r, players) {

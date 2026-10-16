@@ -71,10 +71,29 @@ const Game = {
     return S.yearStats[y] = S.yearStats[y] || { starts: 0, wins: 0, earn: 0, gw: 0, g1: 0, births: 0 };
   },
 
+  // 出走方針: auto=自動（ローテ優先）/ plan=ローテのみ / manual=手動
+  mode(h) { return h.mode || (h.auto === false ? 'manual' : 'auto'); },
+
   autoEntries() {
     S.entries = {};
+    const now = Race.absWeek();
     for (const h of Game.mine('racing')) {
-      if (!h.auto) continue;
+      h.plan = (h.plan || []).filter(p => p.y * 48 + p.w >= now);
+      const p = h.plan.find(x => x.y === S.year && x.w === S.week);
+      if (p) {
+        const r = Race.findPlanned(h, p);
+        if (r) {
+          S.entries[h.id] = r.id;
+        } else {
+          Game.news(`${h.name}は予定していた${Plan.label(p)}に出走できませんでした（${Plan.whyNot(h, p)}）。`, 'bad');
+          h.plan = h.plan.filter(x => x !== p);
+        }
+        continue;
+      }
+      if (Game.mode(h) !== 'auto') continue;
+      // ローテの目標レースが近い場合は調整に専念する
+      const next = h.plan[0];
+      if (next && next.y * 48 + next.w - now <= 3) continue;
       const r = Race.autoPick(h);
       if (r) S.entries[h.id] = r.id;
     }
@@ -160,7 +179,8 @@ const Game = {
       if (h.role === 'foal' && a >= 2) {
         h.role = 'racing';
         h.intensity = 'normal';
-        h.auto = true;
+        h.mode = 'auto';
+        h.plan = [];
         report.events.push(`${h.name}が入厩しました。6月からデビュー可能です。`);
       } else if (h.role === 'racing' && a >= 10) {
         const msg = Game.autoRetire(h);
@@ -405,4 +425,88 @@ const Game = {
     try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* noop */ }
     S = null;
   },
+};
+
+// ローテーション（出走計画）
+const Plan = {
+  abs(y, w) { return y * 48 + w; },
+
+  ageOk(h, a, y) {
+    const age = y - h.birth;
+    return a === '2' ? age === 2 : a === '3' ? age === 3 : a === '3+' ? age >= 3 : age >= 4;
+  },
+
+  // 今週から1年半先までの重賞（年齢・性別で出走可能なもの）
+  upcomingGraded(h) {
+    const out = [];
+    const sy = S.year, sw = S.week;
+    for (let i = 0; i < 72; i++) {
+      let y = S.year, w = S.week + i;
+      if (w > 48) { w -= 48; y++; }
+      for (const g of GRADED) {
+        if ((g.m - 1) * 4 + g.w !== w) continue;
+        if (g.x === 'F' && h.sex !== 'F') continue;
+        if (!Plan.ageOk(h, g.a, y)) continue;
+        const r = { cls: g.g, surf: g.s, dist: g.d, age: g.a, sex: g.x, lv: Race.levelFor(g.g, g.a, g.x, w) };
+        // 見込みはレース時点の成長度で計算する
+        S.year = y; S.week = w;
+        const sc = Race.score(h, r, { ignoreCond: true });
+        S.year = sy; S.week = sw;
+        out.push({ y, w, g, r, note: Plan.classNote(h, g), out: sc - r.lv });
+      }
+    }
+    return out;
+  },
+
+  classNote(h, g) {
+    const need = (g.a === '2' || g.a === '3') ? 1 : 3;
+    return h.record.cls >= need ? '' : `${CLASS_NAMES[need]}以上が必要`;
+  },
+
+  label(p) {
+    if (p.n) return p.n;
+    return `自己条件戦（${{ turf: '芝', dirt: 'ダート', any: '馬場問わず' }[p.surf || 'any']}）`;
+  },
+
+  whyNot(h, p) {
+    if (h.inj > 0) return '故障中';
+    if (h.rest > 0) return '放牧中';
+    if (Gen.age(h) === 2 && S.week < 21) return '2歳馬のデビューは6月からです';
+    if (p.n) {
+      const g = GRADED.find(x => x.n === p.n);
+      if (g && Plan.classNote(h, g)) return Plan.classNote(h, g);
+    }
+    return '出走条件を満たしていません';
+  },
+
+  add(h, p) {
+    h.plan = (h.plan || []).filter(x => !(x.y === p.y && x.w === p.w));
+    h.plan.push(p);
+    h.plan.sort((a, b) => Plan.abs(a.y, a.w) - Plan.abs(b.y, b.w));
+    if (p.y === S.year && p.w === S.week) {
+      const r = Race.findPlanned(h, p);
+      if (r) S.entries[h.id] = r.id;
+    }
+    Game.save();
+  },
+
+  remove(h, i) {
+    const p = h.plan[i];
+    h.plan.splice(i, 1);
+    if (p && p.y === S.year && p.w === S.week) delete S.entries[h.id];
+    Game.save();
+  },
+
+  // 間隔が詰まりすぎている予定の警告
+  warnings(h) {
+    const ws = [];
+    const pl = h.plan || [];
+    for (let i = 1; i < pl.length; i++) {
+      const gap = Plan.abs(pl[i].y, pl[i].w) - Plan.abs(pl[i - 1].y, pl[i - 1].w);
+      if (gap <= 2) ws.push(`${Plan.label(pl[i - 1])} → ${Plan.label(pl[i])} は間隔が${gap === 1 ? '連闘' : '中1週'}です。疲労に注意してください。`);
+    }
+    return ws;
+  },
+
+  next(h) { return (h.plan || [])[0] || null; },
 };

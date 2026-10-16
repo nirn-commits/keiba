@@ -149,7 +149,7 @@ const UI = {
       return `<div class="card">
         <h2>競走馬 <span class="muted small">${list.length}頭 / 2歳馬は6月からデビュー可能</span></h2>
         <div class="table-wrap"><table class="list">
-          <tr><th>馬名</th><th>性齢</th><th>クラス</th><th>成績</th><th>現在能力</th><th>適性</th><th>調子</th><th>疲労</th><th>調教</th><th>今週の出走</th><th>自動</th><th></th></tr>
+          <tr><th>馬名</th><th>性齢</th><th>クラス</th><th>成績</th><th>現在能力</th><th>適性</th><th>調子</th><th>疲労</th><th>調教</th><th>今週の出走</th><th>ローテ</th><th>出走方針</th><th></th></tr>
           ${list.map(h => {
             const elig = S.weekRaces.filter(r => Race.eligible(h, r)).sort((a, b) => RACE_CLS[b.cls].rank - RACE_CLS[a.cls].rank);
             const cur = S.entries[h.id] || '';
@@ -171,13 +171,14 @@ const UI = {
               <td><div class="bar fat" title="${Math.round(h.fat)}"><span style="width:${h.fat}%"></span></div></td>
               <td><select data-chg="intensity" data-id="${h.id}">${Object.entries(INTENSITY).map(([k, v]) => `<option value="${k}" ${h.intensity === k ? 'selected' : ''}>${v.name}</option>`).join('')}</select></td>
               <td>${sel}</td>
-              <td class="center"><input type="checkbox" data-chg="auto" data-id="${h.id}" ${h.auto ? 'checked' : ''} title="自動で出走レースを選ぶ"></td>
+              <td class="small">${UI.nextPlan(h)}<br><button class="btn sm" data-act="rotation" data-id="${h.id}">ローテ設定</button></td>
+              <td><select data-chg="mode" data-id="${h.id}">${[['auto', '自動'], ['plan', 'ローテのみ'], ['manual', '手動']].map(([k, n]) => `<option value="${k}" ${Game.mode(h) === k ? 'selected' : ''}>${n}</option>`).join('')}</select></td>
               <td class="nowrap">${h.inj > 0 || h.rest > 0 ? '' : `<button class="btn sm" data-act="rest" data-id="${h.id}">放牧</button>`}
                 <button class="btn sm" data-act="retireDlg" data-id="${h.id}">引退</button></td>
             </tr>`;
           }).join('')}
         </table></div>
-        <p class="small muted">見込み: ◎勝ち負け ○上位争い ▲掲示板 △苦戦 ×厳しい。疲労が溜まると成績が落ち、故障しやすくなります。調教「強め」は成長が早い反面、疲労と故障リスクが増えます。</p>
+        <p class="small muted">出走方針 — 自動: ローテの予定を優先し、空いた週は適したレースを自動で選びます（目標レースの3週前からは調整に専念）。ローテのみ: 予定したレースだけに出走します。手動: ローテの予定以外は毎週ご自身で選びます。<br>見込み: ◎勝ち負け ○上位争い ▲掲示板 △苦戦 ×厳しい。疲労が溜まると成績が落ち、故障しやすくなります。調教「強め」は成長が早い反面、疲労と故障リスクが増えます。</p>
       </div>`;
     },
 
@@ -582,6 +583,79 @@ const UI = {
     UI.modal(html);
   },
 
+  nextPlan(h) {
+    const p = Plan.next(h);
+    if (!p) return '<span class="muted">予定なし</span>';
+    const more = h.plan.length > 1 ? ` <span class="muted">他${h.plan.length - 1}件</span>` : '';
+    return `${p.y !== S.year ? p.y + '年' : ''}${U.month(p.w)}月${U.wim(p.w)}週 ${U.esc(Plan.label(p))}${more}`;
+  },
+
+  rot: { hid: null, fit: true, surf: '', grade: '' },
+
+  showRotation(hid) {
+    const h = H(hid);
+    if (!h) return;
+    const R = UI.rot;
+    if (R.hid !== hid) Object.assign(R, { hid, fit: true, surf: '', grade: '' });
+    h.plan = h.plan || [];
+    const planned = new Set(h.plan.map(p => `${p.y}-${p.w}-${p.n || ''}`));
+    let list = Plan.upcomingGraded(h);
+    if (R.fit) list = list.filter(x => x.r.dist >= h.dMin - 200 && x.r.dist <= h.dMax + 200 && Gen.surfScore(h, x.r.surf) >= 0.35);
+    if (R.surf) list = list.filter(x => x.r.surf === R.surf);
+    if (R.grade) list = list.filter(x => x.g.g === R.grade);
+    const sym = m => m >= 7 ? '◎' : m >= 3 ? '○' : m >= -1 ? '▲' : m >= -5 ? '△' : '×';
+    const weeks = [];
+    for (let i = 0; i < 16; i++) {
+      let y = S.year, w = S.week + i;
+      if (w > 48) { w -= 48; y++; }
+      weeks.push([y, w]);
+    }
+    const warns = Plan.warnings(h);
+    UI.modal(`<h2>${U.esc(h.name)}のローテーション <span class="muted small">${Gen.sexLabel(h)}${Gen.age(h)} / ${UI.clsLabel(h)} / ${UI.distStr(h)} / ${UI.surfStr(h)} / 成長型 ${UI.growthStr(h)}</span></h2>
+      <div class="grid2">
+        <div>
+          <h3>予定（${h.plan.length}件）</h3>
+          ${h.plan.length ? `<table class="list">${h.plan.map((p, i) => `<tr>
+            <td class="nowrap">${p.y}年${U.month(p.w)}月${U.wim(p.w)}週</td>
+            <td>${p.g ? UI.raceBadge(p.g) + ' ' : ''}${U.esc(Plan.label(p))}${p.d ? ` <span class="muted small">${p.s === 'turf' ? '芝' : 'ダ'}${p.d}m</span>` : ''}</td>
+            <td><button class="btn sm danger" data-act="rotDel" data-id="${h.id}" data-i="${i}">削除</button></td></tr>`).join('')}</table>`
+            : '<div class="empty-note">予定はありません。右の一覧から目標レースを追加してください。</div>'}
+          ${warns.map(t => `<div class="comment warn">${U.esc(t)}</div>`).join('')}
+          <h3>自己条件戦を予定に入れる</h3>
+          <div class="row">
+            <select id="condWeek">${weeks.map(([y, w]) => `<option value="${y}-${w}">${y}年${U.month(w)}月${U.wim(w)}週</option>`).join('')}</select>
+            <select id="condSurf"><option value="any">馬場問わず</option><option value="turf">芝</option><option value="dirt">ダート</option></select>
+            <button class="btn sm primary" data-act="rotAddCond" data-id="${h.id}">追加</button>
+          </div>
+          <p class="small muted">自己条件戦は、その週の番組から今のクラスで出走できる最適なレースを選びます。</p>
+          <p class="small muted">見込みはレース時点の成長を見越した目安です（調子・疲労は含みません）。重賞は2・3歳限定戦なら1勝クラス以上、古馬混合なら3勝クラス以上で出走できます。</p>
+        </div>
+        <div>
+          <h3>重賞カレンダー（1年半先まで）</h3>
+          <div class="row" style="margin-bottom:6px">
+            <label class="small"><input type="checkbox" data-chg="rotFilter" data-k="fit" ${R.fit ? 'checked' : ''}> 適性に合うレースのみ</label>
+            <select data-chg="rotFilter" data-k="surf"><option value="">芝・ダ</option><option value="turf" ${R.surf === 'turf' ? 'selected' : ''}>芝</option><option value="dirt" ${R.surf === 'dirt' ? 'selected' : ''}>ダート</option></select>
+            <select data-chg="rotFilter" data-k="grade"><option value="">全格</option>${['G1', 'G2', 'G3'].map(g => `<option value="${g}" ${R.grade === g ? 'selected' : ''}>${RACE_CLS[g].name}</option>`).join('')}</select>
+          </div>
+          <div class="table-wrap" style="max-height:460px;overflow-y:auto"><table class="list">
+            <tr><th>時期</th><th>レース</th><th>距離</th><th>見込み</th><th></th></tr>
+            ${list.map(x => {
+              const key = `${x.y}-${x.w}-${x.g.n}`;
+              return `<tr>
+                <td class="nowrap small">${x.y !== S.year ? x.y + '年' : ''}${x.g.m}月${x.g.w}週</td>
+                <td>${UI.raceBadge(x.g.g)} ${U.esc(x.g.n)}${x.note ? `<br><span class="small" style="color:var(--warn)">${x.note}</span>` : ''}</td>
+                <td class="nowrap">${x.g.s === 'turf' ? '芝' : 'ダ'}${x.g.d}</td>
+                <td class="center">${sym(x.out)}</td>
+                <td>${planned.has(key) ? '<span class="badge">予定済</span>' : `<button class="btn sm" data-act="rotAdd" data-id="${h.id}" data-y="${x.y}" data-w="${x.w}" data-n="${U.esc(x.g.n)}">追加</button>`}</td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="5" class="empty-note">条件に合う重賞がありません</td></tr>'}
+          </table></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" data-act="closeModal">閉じる</button></div>`,
+      () => { if (UI.tab === 'racers' || UI.tab === 'home') UI.render(); });
+  },
+
   showReport(rep) {
     UI.modal(`<h2>${U.dateStr(rep.y, rep.w)} の結果</h2>${UI.reportBody(rep)}
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" data-act="closeModal">OK</button></div>`);
@@ -612,6 +686,20 @@ const Act = {
   },
   raceSpeed(d) { if (Viewer.state) Viewer.state.speed = +d.v; },
   raceSkip() { Viewer.finish(); },
+  rotation(d) { UI.showRotation(+d.id); },
+  rotAdd(d) {
+    const h = H(+d.id);
+    const g = GRADED.find(x => x.n === d.n);
+    Plan.add(h, { y: +d.y, w: +d.w, n: d.n, g: g.g, s: g.s, d: g.d });
+    UI.showRotation(h.id);
+  },
+  rotAddCond(d) {
+    const h = H(+d.id);
+    const [y, w] = document.getElementById('condWeek').value.split('-').map(Number);
+    Plan.add(h, { y, w, n: null, surf: document.getElementById('condSurf').value });
+    UI.showRotation(h.id);
+  },
+  rotDel(d) { Plan.remove(H(+d.id), +d.i); UI.showRotation(+d.id); },
   rest(d) { Game.rest(+d.id, 4); UI.toast('4週間の放牧に出しました。'); UI.render(); },
   retireDlg(d) {
     const h = H(+d.id);
@@ -709,13 +797,14 @@ const Act = {
 const Chg = {
   entry(d, v) { Game.setEntry(+d.id, v); Game.save(); },
   intensity(d, v) { H(+d.id).intensity = v; Game.save(); },
-  auto(d, v, el) {
+  mode(d, v) {
     const h = H(+d.id);
-    h.auto = el.checked;
-    if (h.auto && !S.entries[h.id]) { const r = Race.autoPick(h); if (r) S.entries[h.id] = r.id; }
+    h.mode = v;
+    if (v === 'auto' && !S.entries[h.id]) { const r = Race.autoPick(h); if (r) S.entries[h.id] = r.id; }
     Game.save();
     UI.render();
   },
+  rotFilter(d, v, el) { UI.rot[d.k] = el.type === 'checkbox' ? el.checked : v; UI.showRotation(UI.rot.hid); },
   breedRoot(d, v) { UI.breed.root = v; UI.render(); },
   breedSort(d, v) { UI.breed.sort = v; UI.render(); },
   stalRoot(d, v) { UI.stal.root = v; UI.render(); },
