@@ -1,7 +1,9 @@
 'use strict';
 
 // ゲーム進行・経営
-const SAVE_KEY = 'keiba-sim-save-v1';
+const SAVE_PREFIX = 'keiba-sim-';
+const SAVE_SLOTS = 5;
+const LEGACY_SAVE_KEY = 'keiba-sim-save-v1';
 
 const Game = {
   newGame(farmName, kanmei) {
@@ -11,7 +13,7 @@ const Game = {
       stallions: [], npcMares: [], market: { mares: [], yearlings: [] },
       entries: {}, weekRaces: [], news: [], honors: [], yearStats: {}, finance: {},
       facilities: { barn: 1, nursery: 1, pasture: 1, trainer: 1 },
-      lastReport: null,
+      lastReport: null, settings: { autosave: true },
     };
     Gen.usedNames = new Set();
     World.generate();
@@ -403,30 +405,100 @@ const Game = {
   },
 
   // ---- セーブ ----
-  save() {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 容量超過などは無視 */ }
+  // オートセーブ（毎週）と、手動で使うスロット1〜5を持つ
+  slotKey(id) { return SAVE_PREFIX + (id === 'auto' ? 'auto' : 'slot' + id); },
+
+  readIndex() {
+    try { return JSON.parse(localStorage.getItem(SAVE_PREFIX + 'index')) || {}; } catch (e) { return {}; }
   },
-  load() {
+  writeIndex(idx) {
+    try { localStorage.setItem(SAVE_PREFIX + 'index', JSON.stringify(idx)); } catch (e) { /* noop */ }
+  },
+
+  summary() {
+    return {
+      farm: S.farmName, y: S.year, w: S.week, money: S.money,
+      horses: Game.mine().filter(h => h.role !== 'retired').length,
+      honors: S.honors.length, g1: S.honors.filter(x => x.g === 'G1').length, at: Date.now(),
+    };
+  },
+
+  write(id) {
+    if (!S) return false;
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
+      localStorage.setItem(Game.slotKey(id), JSON.stringify(S));
+      const idx = Game.readIndex();
+      idx[id] = Game.summary();
+      Game.writeIndex(idx);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // オートセーブ
+  save() {
+    if (S && S.settings && S.settings.autosave === false) return true;
+    const ok = Game.write('auto');
+    if (!ok && !Game._warned) {
+      Game._warned = true;
+      Game.news('オートセーブに失敗しました（ブラウザの保存容量不足）。不要なスロットを削除してください。', 'bad');
+    }
+    return ok;
+  },
+  saveSlot(id) { return Game.write(id); },
+
+  loadSlot(id) {
+    try {
+      const raw = localStorage.getItem(Game.slotKey(id));
       if (!raw) return false;
       S = JSON.parse(raw);
+      S.settings = S.settings || {};
       Gen.rebuildNames();
       return true;
     } catch (e) { return false; }
   },
+
+  deleteSlot(id) {
+    try { localStorage.removeItem(Game.slotKey(id)); } catch (e) { /* noop */ }
+    const idx = Game.readIndex();
+    delete idx[id];
+    Game.writeIndex(idx);
+  },
+
+  listSlots() {
+    const idx = Game.readIndex();
+    return ['auto'].concat(Array.from({ length: SAVE_SLOTS }, (_, i) => String(i + 1)))
+      .map(id => ({ id, meta: idx[id] || null }));
+  },
+
+  hasAnySave() { return Game.listSlots().some(s => s.meta); },
+
+  // 旧形式（1枠のみ）のセーブをオートセーブへ移す
+  migrate() {
+    try {
+      const raw = localStorage.getItem(LEGACY_SAVE_KEY);
+      if (!raw) return;
+      if (!localStorage.getItem(Game.slotKey('auto'))) {
+        S = JSON.parse(raw);
+        Gen.rebuildNames();
+        Game.write('auto');
+        S = null;
+      }
+      localStorage.removeItem(LEGACY_SAVE_KEY);
+    } catch (e) { /* noop */ }
+  },
+
   exportData() { return JSON.stringify(S); },
   importData(text) {
     const data = JSON.parse(text);
     if (!data || !data.horses || !data.year) throw new Error('セーブデータの形式が正しくありません');
     S = data;
+    S.settings = S.settings || {};
     Gen.rebuildNames();
     Game.save();
   },
-  reset() {
-    try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* noop */ }
-    S = null;
-  },
+  toTitle() { S = null; },
 };
 
 // ローテーション（出走計画）

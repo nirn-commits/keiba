@@ -68,6 +68,7 @@ const UI = {
     ml.textContent = '所持金 ' + U.money(S.money);
     ml.classList.toggle('neg', S.money < 0);
     document.getElementById('btnNext').style.display = '';
+    document.getElementById('btnSave').style.display = '';
     document.getElementById('tabs').innerHTML = TABS.map(([k, n]) =>
       `<button data-act="tab" data-tab="${k}" class="${UI.tab === k ? 'active' : ''}">${n}</button>`).join('');
     const v = document.getElementById('view');
@@ -75,6 +76,11 @@ const UI = {
   },
 
   renderTitle() {
+    const slots = Game.listSlots();
+    const auto = slots[0].meta;
+    const any = slots.some(x => x.meta);
+    document.getElementById('farmName').textContent = 'ダービー牧場物語';
+    document.getElementById('btnSave').style.display = 'none';
     document.getElementById('tabs').innerHTML = '';
     document.getElementById('btnNext').style.display = 'none';
     document.getElementById('dateLabel').textContent = '';
@@ -85,10 +91,17 @@ const UI = {
         <div style="font-size:48px">🐎</div>
         <h1>ダービー牧場物語</h1>
         <p class="muted">配合理論で名馬を生み出す、競馬経営シミュレーション</p>
+        ${auto || any ? `<div class="row" style="justify-content:center;margin:14px 0">
+          ${auto ? `<button class="btn primary big" data-act="loadSlot" data-id="auto">つづきから</button>` : ''}
+          ${any ? '<button class="btn big" data-act="slots">ロード</button>' : ''}
+        </div>
+        ${auto ? `<div class="small muted">オートセーブ: ${UI.slotSummary(auto)}</div>` : ''}
+        <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+        <div class="small muted">新しい牧場をはじめる</div>` : ''}
         <div class="field"><label>牧場名</label><input type="text" id="inFarm" value="袋井ファーム" maxlength="16"></div>
         <div class="field"><label>冠名（生産馬の名前の頭につきます。空欄でも可）</label><input type="text" id="inKan" value="" maxlength="6" placeholder="例: フクロイ"></div>
-        <button class="btn primary big" data-act="start">牧場を開く</button>
-        <p class="small muted" style="margin-top:12px">データはブラウザに自動保存されます。</p>
+        <button class="btn primary big" data-act="start">はじめから</button>
+        <p class="small muted" style="margin-top:12px">${auto ? 'はじめからを選ぶと、オートセーブは新しい牧場で上書きされます。残したい進行はスロットにセーブしておいてください。' : 'データはブラウザに保存されます。'}</p>
       </div>`;
   },
 
@@ -366,11 +379,15 @@ const UI = {
           <div class="row" style="margin-top:8px"><button class="btn" data-act="saveSettings">設定を保存</button></div>
           <h3>セーブデータ</h3>
           <div class="row">
-            <button class="btn" data-act="export">エクスポート</button>
-            <button class="btn" data-act="importDlg">インポート</button>
-            <button class="btn danger" data-act="resetDlg">最初からやり直す</button>
+            <button class="btn primary" data-act="slots">セーブ / ロード</button>
+            <label class="small"><input type="checkbox" data-chg="autosave" ${S.settings && S.settings.autosave === false ? '' : 'checked'}> 毎週オートセーブする</label>
           </div>
-          <p class="small muted">進行は毎週自動でブラウザに保存されます。</p>
+          <div class="row" style="margin-top:8px">
+            <button class="btn" data-act="export">ファイルに書き出す</button>
+            <button class="btn" data-act="importDlg">ファイルから読み込む</button>
+            <button class="btn" data-act="titleDlg">タイトルに戻る</button>
+          </div>
+          <p class="small muted">セーブデータはこのブラウザ内に保存されます。オートセーブ1枠と、手動で使えるスロット${SAVE_SLOTS}枠があります。別の端末に移すときは「ファイルに書き出す」をお使いください。</p>
         </div>
       </div>`;
     },
@@ -673,6 +690,38 @@ const UI = {
       () => { if (UI.tab === 'racers' || UI.tab === 'home') UI.render(); });
   },
 
+  slotSummary(m) {
+    const d = new Date(m.at);
+    const ds = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${U.esc(m.farm)} ${U.dateStr(m.y, m.w)} / 所持金 ${U.money(m.money)} / 所有馬 ${m.horses}頭 / 重賞 ${m.honors}勝（GI ${m.g1}） <span class="muted">（${ds} 保存）</span>`;
+  },
+
+  confirm(title, body, act, data, okLabel, danger) {
+    const attrs = Object.entries(data).map(([k, v]) => `data-${k}="${U.esc(v)}"`).join(' ');
+    UI.modal(`<h2>${U.esc(title)}</h2><p>${body}</p>
+      <div class="row"><button class="btn ${danger ? 'danger' : 'primary'}" data-act="${act}" ${attrs}>${okLabel}</button>
+      <button class="btn" data-act="slots">やめる</button></div>`);
+  },
+
+  showSlots() {
+    const inGame = !!S;
+    const rows = Game.listSlots().map(({ id, meta }) => {
+      const name = id === 'auto' ? 'オートセーブ' : `スロット${id}`;
+      return `<tr>
+        <td class="nowrap"><b>${name}</b></td>
+        <td class="small">${meta ? UI.slotSummary(meta) : '<span class="muted">（空き）</span>'}</td>
+        <td class="nowrap">
+          ${inGame && id !== 'auto' ? `<button class="btn sm primary" data-act="saveSlot" data-id="${id}">セーブ</button>` : ''}
+          ${meta ? `<button class="btn sm" data-act="loadSlot" data-id="${id}">ロード</button>` : ''}
+          ${meta ? `<button class="btn sm danger" data-act="delSlot" data-id="${id}">削除</button>` : ''}
+        </td></tr>`;
+    }).join('');
+    UI.modal(`<h2>${inGame ? 'セーブ / ロード' : 'ロード'}</h2>
+      ${inGame ? `<p class="small muted">現在: ${U.esc(S.farmName)} ${U.dateStr(S.year, S.week)} / 所持金 ${U.money(S.money)}</p>` : ''}
+      <div class="table-wrap"><table class="list">${rows}</table></div>
+      <p class="small muted">オートセーブは毎週自動で上書きされます。大事な場面（GI前・配合前など）はスロットに残しておくと、後から戻ってやり直せます。</p>`);
+  },
+
   showReport(rep) {
     UI.modal(`<h2>${U.dateStr(rep.y, rep.w)} の結果</h2>${UI.reportBody(rep)}
       <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn primary" data-act="closeModal">OK</button></div>`);
@@ -813,11 +862,41 @@ const Act = {
     };
     rd.readAsText(f);
   },
-  resetDlg() {
-    UI.modal(`<h2>最初からやり直しますか？</h2><p>現在のセーブデータは削除されます。</p>
-      <div class="row"><button class="btn danger" data-act="resetDo">削除してやり直す</button><button class="btn" data-act="closeModal">やめる</button></div>`);
+  slots() { UI.showSlots(); },
+  saveSlot(d) {
+    const meta = Game.readIndex()[d.id];
+    if (meta && !d.ok) {
+      UI.confirm(`スロット${d.id}に上書きしますか？`, `${UI.slotSummary(meta)}`, 'saveSlot', { id: d.id, ok: 1 }, '上書きする');
+      return;
+    }
+    UI.toast(Game.saveSlot(d.id) ? `スロット${d.id}にセーブしました。` : 'セーブに失敗しました（保存容量不足）。不要なスロットを削除してください。');
+    UI.showSlots();
   },
-  resetDo() { Game.reset(); UI.closeModal(); UI.render(); },
+  loadSlot(d) {
+    if (S && !d.ok) {
+      UI.confirm(`${d.id === 'auto' ? 'オートセーブ' : 'スロット' + d.id}をロードしますか？`, 'セーブしていない現在の進行は失われます。', 'loadSlot', { id: d.id, ok: 1 }, 'ロードする');
+      return;
+    }
+    if (!Game.loadSlot(d.id)) { UI.toast('ロードに失敗しました。'); return; }
+    UI.closeModal();
+    UI.tab = 'home';
+    UI.render();
+    UI.toast(`${U.dateStr(S.year, S.week)}のデータをロードしました。`);
+  },
+  delSlot(d) {
+    if (!d.ok) {
+      UI.confirm(`${d.id === 'auto' ? 'オートセーブ' : 'スロット' + d.id}を削除しますか？`, '削除したデータは元に戻せません。', 'delSlot', { id: d.id, ok: 1 }, '削除する', true);
+      return;
+    }
+    Game.deleteSlot(d.id);
+    UI.toast('削除しました。');
+    if (!S) UI.render();
+    if (Game.hasAnySave() || S) UI.showSlots(); else UI.closeModal();
+  },
+  titleDlg() {
+    UI.confirm('タイトルに戻りますか？', 'オートセーブが有効なら、現在の進行は「つづきから」で再開できます。', 'toTitle', {}, 'タイトルへ');
+  },
+  toTitle() { Game.save(); Game.toTitle(); UI.closeModal(); UI.tab = 'home'; UI.render(); },
 };
 
 const Chg = {
@@ -834,6 +913,12 @@ const Chg = {
     UI.rot[d.k] = el.type === 'checkbox' ? el.checked : v;
     UI.showRotation(UI.rot.hid);
     Game.save();
+  },
+  autosave(d, v, el) {
+    S.settings = S.settings || {};
+    S.settings.autosave = el.checked;
+    if (el.checked) Game.save();
+    UI.toast(el.checked ? 'オートセーブを有効にしました。' : 'オートセーブを無効にしました。手動でセーブしてください。');
   },
   breedRoot(d, v) { UI.breed.root = v; UI.render(); },
   breedSort(d, v) { UI.breed.sort = v; UI.render(); },
@@ -860,5 +945,5 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') UI.closeModal();
 });
 
-Game.load();
+Game.migrate();
 UI.render();
